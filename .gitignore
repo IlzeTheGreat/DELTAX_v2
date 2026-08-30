@@ -1,0 +1,54 @@
+@'
+# Secrets and environment variables
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing and code coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Build files
+build/
+dist/
+*.egg-info/
+
+# Logs and runtime files
+*.log
+logs/
+*.pid
+
+# Local databases and trading runtime data
+*.db
+*.sqlite
+*.sqlite3
+data/
+runtime/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# VS Code and IDE
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+'@ | Set-Content -Encoding utf8 .gitignore
