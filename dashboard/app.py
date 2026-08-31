@@ -146,7 +146,7 @@ def countdown_text(seconds):
 
 st.set_page_config(
     page_title="DELTAX | AI Trading Agent",
-    page_icon="Δ",
+    page_icon="🏆",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
