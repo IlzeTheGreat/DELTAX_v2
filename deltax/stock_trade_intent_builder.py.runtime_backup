@@ -85,15 +85,6 @@ def json_default(value: Any):
     return str(value)
 
 
-def jsonb_value(value: Any) -> Jsonb:
-    # psycopg's default JSON encoder cannot serialize datetime/Decimal values
-    # that legitimately appear in thesis metadata and risk-gate details.
-    return Jsonb(
-        value,
-        dumps=lambda obj: json.dumps(obj, default=json_default),
-    )
-
-
 def decimal_value(value: Any, default: Decimal | None = None) -> Decimal | None:
     if value is None:
         return default
@@ -567,7 +558,7 @@ class StockTradeIntentBuilder:
                     f"Stock entry blocked for {thesis['symbol']} "
                     f"{thesis['strategy']} {thesis['direction']}"
                 ),
-                jsonb_value(
+                Jsonb(
                     {
                         "trade_thesis_id": str(thesis["id"]),
                         "strategy": thesis["strategy"],
@@ -680,7 +671,7 @@ class StockTradeIntentBuilder:
                 plan["max_loss"],
                 idempotency_key,
                 thesis["expires_at"],
-                jsonb_value(metadata),
+                Jsonb(metadata),
             ),
         )
 

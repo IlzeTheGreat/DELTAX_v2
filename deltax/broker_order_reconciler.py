@@ -317,7 +317,6 @@ class BrokerOrderReconciler:
         if alpaca_order_id:
             return self.client.get_order_by_id(
                 alpaca_order_id,
-                nested=True,
             )
 
         client_order_id = broker_row["client_order_id"]

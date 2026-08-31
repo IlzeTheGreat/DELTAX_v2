@@ -1,16 +1,4 @@
 # File: deltax/scheduler.py
-# DELTAX lightweight scheduler for hackathon demo / paper trading.
-#
-# Runs:
-#   trading_cycle.py --run every 5 minutes
-#   news_worker.py every 15 minutes
-#
-# Notes:
-# - Child modules already use PostgreSQL advisory locks, so overlap is blocked.
-# - This scheduler never changes bot_control.
-# - Stop with Ctrl+C.
-# - Logs are written under logs/.
-
 from __future__ import annotations
 
 import argparse
@@ -28,116 +16,155 @@ TRADING_INTERVAL = 5 * 60
 NEWS_INTERVAL = 15 * 60
 
 
-def log_line(path: Path, text: str) -> None:
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(text.rstrip() + "\n")
+class Job:
+    def __init__(self, name: str, args: list[str], interval: int):
+        self.name = name
+        self.args = args
+        self.interval = interval
+        self.next_run = time.monotonic()
+        self.process: subprocess.Popen | None = None
+        self.log_handle = None
 
+    @property
+    def log_path(self) -> Path:
+        return LOG_DIR / f"{self.name}.log"
 
-def run_child(name: str, args: list[str]) -> int:
-    started = datetime.now(timezone.utc)
-    log_path = LOG_DIR / f"{name}.log"
+    def running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
 
-    command = [
-        sys.executable,
-        str(PROJECT_ROOT / args[0]),
-        *args[1:],
-    ]
-
-    log_line(
-        log_path,
-        f"\n===== {started.isoformat()} START {' '.join(command)} =====",
-    )
-
-    process = subprocess.run(
-        command,
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if process.stdout:
-        log_line(log_path, process.stdout)
-    if process.stderr:
-        log_line(log_path, "STDERR:\n" + process.stderr)
-
-    finished = datetime.now(timezone.utc)
-    log_line(
-        log_path,
-        f"===== {finished.isoformat()} END rc={process.returncode} =====",
-    )
-
-    print(
-        f"[{finished.isoformat()}] {name}: "
-        f"{'OK' if process.returncode == 0 else 'FAILED'}"
-    )
-
-    return process.returncode
-
-
-def sleep_until(target_monotonic: float) -> None:
-    while True:
-        remaining = target_monotonic - time.monotonic()
-        if remaining <= 0:
+    def reap(self) -> None:
+        if self.process is None:
             return
-        time.sleep(min(remaining, 1.0))
+        return_code = self.process.poll()
+        if return_code is None:
+            return
+
+        finished = datetime.now(timezone.utc)
+        if self.log_handle:
+            self.log_handle.write(
+                f"\n===== {finished.isoformat()} END rc={return_code} =====\n"
+            )
+            self.log_handle.flush()
+            self.log_handle.close()
+            self.log_handle = None
+
+        print(
+            f"[{finished.isoformat()}] {self.name}: "
+            f"{'OK' if return_code == 0 else 'FAILED'}"
+        )
+        self.process = None
+
+    def advance_schedule(self) -> None:
+        current = time.monotonic()
+        while self.next_run <= current:
+            self.next_run += self.interval
+
+    def start_if_due(self) -> None:
+        self.reap()
+        if time.monotonic() < self.next_run:
+            return
+
+        if self.running():
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] "
+                f"{self.name}: SKIPPED, previous run still active"
+            )
+            self.advance_schedule()
+            return
+
+        started = datetime.now(timezone.utc)
+        command = [
+            sys.executable,
+            str(PROJECT_ROOT / self.args[0]),
+            *self.args[1:],
+        ]
+
+        self.log_handle = self.log_path.open(
+            "a",
+            encoding="utf-8",
+            buffering=1,
+        )
+        self.log_handle.write(
+            f"\n===== {started.isoformat()} START {' '.join(command)} =====\n"
+        )
+        self.log_handle.flush()
+
+        self.process = subprocess.Popen(
+            command,
+            cwd=PROJECT_ROOT,
+            stdout=self.log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        print(
+            f"[{started.isoformat()}] "
+            f"{self.name}: START pid={self.process.pid}"
+        )
+        self.advance_schedule()
+
+    def stop(self) -> None:
+        if self.running():
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        self.reap()
+        if self.log_handle:
+            self.log_handle.close()
+            self.log_handle = None
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run DELTAX trading/news loops."
+        description="Run independent DELTAX trading/news loops."
     )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="Run one news cycle and one trading cycle, then exit.",
-    )
+    parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
+    trading = Job(
+        "trading_cycle",
+        ["deltax/trading_cycle.py", "--run"],
+        TRADING_INTERVAL,
+    )
+    news = Job(
+        "news_worker",
+        ["deltax/news_worker.py"],
+        NEWS_INTERVAL,
+    )
+    jobs = [trading, news]
+
     if args.once:
-        run_child("news_worker", ["deltax/news_worker.py"])
-        run_child(
-            "trading_cycle",
-            ["deltax/trading_cycle.py", "--run"],
-        )
+        for job in jobs:
+            job.start_if_due()
+        while any(job.running() for job in jobs):
+            for job in jobs:
+                job.reap()
+            time.sleep(0.5)
         return
 
-    print("DELTAX scheduler started.")
-    print("Trading cycle: every 5 minutes.")
-    print("News worker: every 15 minutes.")
+    print("DELTAX scheduler v2 started.")
+    print("Trading cycle: every 5 minutes, independent.")
+    print("News worker: every 15 minutes, independent.")
+    print(f"Logs: {LOG_DIR}")
     print("Ctrl+C to stop.")
-
-    now = time.monotonic()
-    next_trading = now
-    next_news = now
 
     try:
         while True:
-            current = time.monotonic()
-
-            if current >= next_news:
-                run_child(
-                    "news_worker",
-                    ["deltax/news_worker.py"],
-                )
-                while next_news <= time.monotonic():
-                    next_news += NEWS_INTERVAL
-
-            current = time.monotonic()
-
-            if current >= next_trading:
-                run_child(
-                    "trading_cycle",
-                    ["deltax/trading_cycle.py", "--run"],
-                )
-                while next_trading <= time.monotonic():
-                    next_trading += TRADING_INTERVAL
-
-            target = min(next_news, next_trading)
-            sleep_until(target)
+            for job in jobs:
+                job.start_if_due()
+                job.reap()
+            time.sleep(0.5)
 
     except KeyboardInterrupt:
-        print("\nDELTAX scheduler stopped.")
+        print("\nStopping DELTAX scheduler...")
+
+    finally:
+        for job in jobs:
+            job.stop()
+        print("DELTAX scheduler stopped.")
 
 
 if __name__ == "__main__":

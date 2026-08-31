@@ -68,16 +68,8 @@ def acquire_lock(connection) -> bool:
 
 
 def release_lock(connection) -> None:
-    # Session-level advisory locks are automatically released by Postgres if
-    # the connection dies. Unlock is therefore best-effort and must never turn
-    # a successful multi-minute news run into a failed worker.
-    try:
-        if connection.closed:
-            return
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
-    except psycopg.Error as exc:
-        print(f"NEWS WORKER LOCK RELEASE WARNING: {exc}", file=sys.stderr)
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
 
 
 def main():
@@ -89,10 +81,7 @@ def main():
     parser.add_argument("--company-ai-limit", type=int, default=10)
     args = parser.parse_args()
 
-    # Advisory-lock connection must not sit idle inside a transaction while
-    # OpenAI/news subprocesses run for several minutes. autocommit keeps the
-    # session lock alive without triggering idle_in_transaction_session_timeout.
-    with psycopg.connect(DATABASE_URL, autocommit=True) as lock_connection:
+    with psycopg.connect(DATABASE_URL) as lock_connection:
         if not acquire_lock(lock_connection):
             print(json.dumps({
                 "status": "skipped",

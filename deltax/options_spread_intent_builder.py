@@ -91,6 +91,14 @@ def json_default(value: Any):
         return str(value)
     return str(value)
 
+def jsonb(value: Any):
+    return Jsonb(
+        value,
+        dumps=lambda obj: json.dumps(
+            obj,
+            default=json_default,
+        ),
+    )
 
 def D(value: Any, default: Decimal | None = None) -> Decimal | None:
     if value is None:
@@ -312,17 +320,18 @@ class OptionsSpreadIntentBuilder:
 
         cursor.execute(
             """
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS count
             FROM positions positions_data
             JOIN instruments
-              ON instruments.symbol = positions_data.symbol
+            ON instruments.symbol = positions_data.symbol
             WHERE instruments.sector = %s
-              AND positions_data.status = ANY(%s)
-              AND positions_data.asset_class IN ('stock', 'option_spread')
+            AND positions_data.status = ANY(%s)
+            AND positions_data.asset_class IN ('stock', 'option_spread')
             """,
             (sector, list(ACTIVE_POSITION_STATUSES)),
         )
-        return int(cursor.fetchone()[0])
+
+        return int(cursor.fetchone()["count"])
 
     def has_pending_option_intent_for_symbol(self, cursor, symbol):
         cursor.execute(
@@ -622,7 +631,7 @@ class OptionsSpreadIntentBuilder:
                 contract["mid"],
                 contract["iv"],
                 contract["delta"],
-                Jsonb(
+                jsonb(
                     {
                         "liquidity_check": "bid_ask_proxy_v1",
                         "volume_available": False,
@@ -760,7 +769,7 @@ class OptionsSpreadIntentBuilder:
                 spread["max_loss"],
                 idempotency_key,
                 thesis["expires_at"],
-                Jsonb(metadata),
+                jsonb(metadata),
             ),
         )
 
@@ -841,7 +850,7 @@ class OptionsSpreadIntentBuilder:
                     f"Options entry blocked for {thesis['symbol']} "
                     f"{thesis['strategy']} {thesis['direction']}"
                 ),
-                Jsonb(
+                jsonb(
                     {
                         "trade_thesis_id": str(thesis["id"]),
                         "failures": failures,

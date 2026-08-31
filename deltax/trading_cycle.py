@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 LOCK_KEY = 4200260832
+LOCK_KEEPALIVE_SECONDS = 30
 MAX_OUTPUT_CHARS = 12000
 
 
@@ -91,12 +93,14 @@ def load_control() -> dict[str, Any]:
 def heartbeat() -> None:
     with psycopg.connect(DATABASE_URL) as connection:
         with connection.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE bot_control
                 SET last_heartbeat_at = now(),
                     updated_at = now()
                 WHERE id = 1
-            """)
+                """
+            )
         connection.commit()
 
 
@@ -107,8 +111,46 @@ def acquire_lock(connection) -> bool:
 
 
 def release_lock(connection) -> None:
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
+    # Advisory locks are session-level. If the DB connection has already been
+    # closed/terminated, PostgreSQL has released the lock automatically.
+    if connection.closed:
+        return
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
+    except psycopg.Error as exc:
+        # Do not convert an otherwise successful trading cycle into rc=1 only
+        # because cleanup failed. Closing the session releases the advisory lock.
+        print(
+            f"WARNING: failed to explicitly release trading-cycle advisory lock: {exc}",
+            file=sys.stderr,
+        )
+
+
+def keep_lock_connection_alive(connection, stop_event: threading.Event) -> None:
+    """
+    Keep the PostgreSQL session that owns the advisory lock active.
+
+    Some hosted PostgreSQL services terminate sessions that stay idle for
+    several minutes. Because DELTAX stages can run longer than five minutes,
+    losing this session would also release the advisory lock too early and
+    allow overlapping trading cycles.
+
+    The keepalive query runs in autocommit mode and does not alter application
+    data or the advisory lock.
+    """
+    while not stop_event.wait(LOCK_KEEPALIVE_SECONDS):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+        except psycopg.Error as exc:
+            print(
+                f"WARNING: trading-cycle lock keepalive failed: {exc}",
+                file=sys.stderr,
+            )
+            return
 
 
 def main():
@@ -119,7 +161,10 @@ def main():
     parser.add_argument("--execution-limit", type=int, default=5)
     args = parser.parse_args()
 
-    with psycopg.connect(DATABASE_URL) as lock_connection:
+    with psycopg.connect(
+        DATABASE_URL,
+        autocommit=True,
+    ) as lock_connection:
         if not acquire_lock(lock_connection):
             print(json.dumps({
                 "status": "skipped",
@@ -127,6 +172,15 @@ def main():
             }, indent=2))
             print("TRADING CYCLE: OK")
             return
+
+        lock_keepalive_stop = threading.Event()
+        lock_keepalive_thread = threading.Thread(
+            target=keep_lock_connection_alive,
+            args=(lock_connection, lock_keepalive_stop),
+            name="deltax-trading-cycle-lock-keepalive",
+            daemon=True,
+        )
+        lock_keepalive_thread.start()
 
         try:
             control = load_control()
@@ -366,6 +420,8 @@ def main():
 
             print("TRADING CYCLE: OK")
         finally:
+            lock_keepalive_stop.set()
+            lock_keepalive_thread.join(timeout=5)
             release_lock(lock_connection)
 
 

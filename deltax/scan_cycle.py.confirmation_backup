@@ -186,46 +186,6 @@ class ScanCycle:
             easy_to_borrow=flags["easy_to_borrow"],
         )
 
-    @staticmethod
-    def confirmation_price_from_bars(
-        bars,
-        confirmation_due_at: datetime,
-    ) -> float | None:
-        due = aware_utc(confirmation_due_at)
-        eligible = []
-
-        for bar in bars:
-            ts = aware_utc(bar.timestamp)
-            if ts < due and ts >= due - timedelta(minutes=6):
-                eligible.append(bar)
-
-        if not eligible:
-            return None
-
-        selected = max(
-            eligible,
-            key=lambda bar: aware_utc(bar.timestamp),
-        )
-        close = getattr(selected, "close", None)
-        return float(close) if close is not None else None
-
-    def historical_confirmation_price(
-        self,
-        symbol: str,
-        confirmation_due_at: datetime,
-        session_open: datetime,
-        now: datetime,
-    ) -> float | None:
-        bars = self.scanner.fetch_intraday_bars(
-            [symbol],
-            aware_utc(session_open),
-            aware_utc(now),
-        )
-        return self.confirmation_price_from_bars(
-            bars.get(symbol, []),
-            confirmation_due_at,
-        )
-
     def initial_route(
         self,
         technical,
@@ -263,18 +223,6 @@ class ScanCycle:
             provisional.direction,
             provisional.mode,
         )
-
-        if candidate.confirmation_due_at <= aware_utc(now):
-            confirmation_price = self.historical_confirmation_price(
-                candidate.symbol,
-                candidate.confirmation_due_at,
-                candidate.session_open,
-                now,
-            )
-            if confirmation_price is not None:
-                candidate.confirmation_checked_at = aware_utc(now)
-                candidate.confirmation_price = confirmation_price
-
         decision = self.router.route(candidate)
         return candidate, decision
 
@@ -291,14 +239,7 @@ class ScanCycle:
                 minutes=INTRADAY_THESIS_TTL_MINUTES
             )
         else:
-            # A pre-market/news-momentum confirmation can already be in the
-            # past when a fresh technical signal is detected later in-session.
-            # The thesis must still remain valid after its actual signal time.
-            expiry_anchor = max(
-                candidate.signal_at,
-                candidate.confirmation_due_at,
-            )
-            expires_at = expiry_anchor + timedelta(
+            expires_at = candidate.confirmation_due_at + timedelta(
                 minutes=CORE_ACTIVE_POST_CONFIRMATION_TTL_MINUTES
             )
 
@@ -374,19 +315,12 @@ class ScanCycle:
             return []
 
         symbols = sorted({row["symbol"] for row in due})
-        bars_by_symbol = self.scanner.fetch_intraday_bars(
-            symbols,
-            aware_utc(session["session_open"]),
-            aware_utc(now),
-        )
+        prices = self.scanner.fetch_latest_prices(symbols)
         results = []
 
         for row in due:
             symbol = row["symbol"]
-            confirmation_price = self.confirmation_price_from_bars(
-                bars_by_symbol.get(symbol, []),
-                row["confirmation_due_at"],
-            )
+            confirmation_price = prices.get(symbol)
 
             if confirmation_price is None:
                 results.append(
@@ -394,7 +328,7 @@ class ScanCycle:
                         "thesis_id": str(row["id"]),
                         "symbol": symbol,
                         "status": "deferred",
-                        "reason": "historical_confirmation_price_unavailable",
+                        "reason": "confirmation_price_unavailable",
                     }
                 )
                 continue
