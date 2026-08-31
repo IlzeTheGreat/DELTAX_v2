@@ -1,0 +1,2 @@
+gap_threshold,reversal_threshold,entry_window_minutes,trades,long_trades,short_trades,win_rate,avg_return,median_return,profit_factor,portfolio_return,max_drawdown,positive_days,trading_days,rank_score
+0.0,0.005,10,14,5,9,1.0,0.028835597736178366,0.03292826515634409,inf,0.12015079534197004,0.0,5,5,1.2085634829507144

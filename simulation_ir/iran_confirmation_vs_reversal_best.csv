@@ -1,0 +1,2 @@
+mode,threshold,trades,long_trades,short_trades,win_rate,avg_return,median_return,profit_factor,portfolio_return,max_drawdown,positive_days,trading_days,rank_score
+reversal,0.0025,33,19,14,0.9393939393939394,0.02415225642195021,0.026954681274900416,13.934945836604939,0.07984168719816132,-0.02886912388461116,4,5,1.36792532468603

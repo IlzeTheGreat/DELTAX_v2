@@ -1,0 +1,739 @@
+# File: deltax/technical_scanner.py
+# Purpose: Scans the DELTAX stock universe for production Core, Active, and Intraday downside and upside technical candidates using Alpaca IEX data.
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta, timezone
+from statistics import mean
+from zoneinfo import ZoneInfo
+
+import psycopg
+from psycopg import sql
+from psycopg.rows import dict_row
+from dotenv import load_dotenv
+
+from alpaca.data.enums import DataFeed
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import (
+    StockBarsRequest,
+    StockLatestTradeRequest,
+)
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import GetCalendarRequest
+
+
+load_dotenv()
+
+DATABASE_URL = os.environ["DATABASE_URL"]
+ALPACA_API_KEY = os.environ["ALPACA_API_KEY_PAPER"]
+ALPACA_API_SECRET = os.environ["ALPACA_API_SECRET_PAPER"]
+ALPACA_DATA_FEED = os.getenv("ALPACA_DATA_FEED_PAPER", "iex").lower()
+
+EXPECTED_CONFIG_VERSION = "deltax_v2_strategy_v2"
+NEW_YORK = ZoneInfo("America/New_York")
+UTC = timezone.utc
+PROXY_SYMBOLS = ["SPY", "QQQ", "IWM"]
+
+
+@dataclass(frozen=True)
+class TechnicalCandidate:
+    symbol: str
+    strategy: str
+    deviation_side: str
+    technical_direction: str
+    signal_at: datetime
+    signal_price: float
+    reference_price: float
+    reference_type: str
+    deviation_pct: float
+    threshold_pct: float
+    atr_14: float
+    atr_pct: float
+    previous_close: float
+    intraday_vwap: float | None
+    weak_indices_count: int | None
+    market_state_complete: bool
+
+
+def feed_enum():
+    if ALPACA_DATA_FEED != "iex":
+        raise ValueError(
+            "DELTAX paper-data feed must currently be 'iex', found "
+            f"'{ALPACA_DATA_FEED}'"
+        )
+
+    return DataFeed.IEX
+
+
+def to_aware_new_york(value):
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=NEW_YORK)
+
+    return value.astimezone(NEW_YORK)
+
+
+def response_data(response):
+    return response.data if hasattr(response, "data") else response
+
+
+class TechnicalScanner:
+    def __init__(self, database_url=DATABASE_URL):
+        self.database_url = database_url
+        self.trading_client = TradingClient(
+            ALPACA_API_KEY,
+            ALPACA_API_SECRET,
+            paper=True,
+        )
+        self.data_client = StockHistoricalDataClient(
+            ALPACA_API_KEY,
+            ALPACA_API_SECRET,
+        )
+        self.strategy_config_id = None
+        self.config_version = None
+        self.config = None
+        self._load_active_config()
+
+    def _load_active_config(self):
+        with psycopg.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        version,
+                        config
+                    FROM strategy_configs
+                    WHERE is_active = true
+                    ORDER BY activated_at DESC NULLS LAST,
+                             created_at DESC
+                    LIMIT 1
+                    """
+                )
+                row = cursor.fetchone()
+
+        if row is None:
+            raise RuntimeError("No active strategy configuration found")
+
+        if row["version"] != EXPECTED_CONFIG_VERSION:
+            raise RuntimeError(
+                "Technical scanner requires active config "
+                f"{EXPECTED_CONFIG_VERSION}, found {row['version']}"
+            )
+
+        self.strategy_config_id = row["id"]
+        self.config_version = row["version"]
+        self.config = row["config"]
+
+    def load_universe(self):
+        universe_name = self.config["universes"]["base"]
+
+        with psycopg.connect(
+            self.database_url,
+            row_factory=dict_row,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        table_name,
+                        column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name IN (
+                          'universes',
+                          'universe_memberships'
+                      )
+                    """
+                )
+                columns = {}
+
+                for row in cursor.fetchall():
+                    columns.setdefault(row["table_name"], set()).add(
+                        row["column_name"]
+                    )
+
+                universe_columns = columns.get("universes", set())
+                membership_columns = columns.get(
+                    "universe_memberships",
+                    set(),
+                )
+
+                universe_name_columns = [
+                    name
+                    for name in (
+                        "universe_key",
+                        "name",
+                        "slug",
+                        "code",
+                    )
+                    if name in universe_columns
+                ]
+                membership_symbol_column = next(
+                    (
+                        name
+                        for name in (
+                            "symbol",
+                            "instrument_symbol",
+                        )
+                        if name in membership_columns
+                    ),
+                    None,
+                )
+
+                if not universe_name_columns:
+                    raise RuntimeError(
+                        "Could not identify the universes name column"
+                    )
+
+                if membership_symbol_column is None:
+                    raise RuntimeError(
+                        "Could not identify the universe-membership "
+                        "symbol column"
+                    )
+
+                symbols = []
+
+                for universe_name_column in universe_name_columns:
+                    query = sql.SQL(
+                        """
+                        SELECT DISTINCT
+                            memberships.{symbol_column} AS symbol
+                        FROM universe_memberships memberships
+                        JOIN universes universe_data
+                            ON universe_data.id = memberships.universe_id
+                        WHERE universe_data.{name_column} = %s
+                        ORDER BY symbol
+                        """
+                    ).format(
+                        symbol_column=sql.Identifier(
+                            membership_symbol_column
+                        ),
+                        name_column=sql.Identifier(
+                            universe_name_column
+                        ),
+                    )
+                    cursor.execute(query, (universe_name,))
+                    symbols = [
+                        row["symbol"].upper()
+                        for row in cursor.fetchall()
+                    ]
+
+                    if symbols:
+                        break
+
+        if not symbols:
+            raise RuntimeError(
+                f"Universe '{universe_name}' has no symbols"
+            )
+
+        return symbols
+
+    def get_clock_and_session(self):
+        clock = self.trading_client.get_clock()
+        timestamp = clock.timestamp
+
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+
+        timestamp = timestamp.astimezone(UTC)
+        session_date = timestamp.astimezone(NEW_YORK).date()
+        calendar = self.trading_client.get_calendar(
+            GetCalendarRequest(
+                start=session_date,
+                end=session_date,
+            )
+        )
+
+        if not calendar:
+            return {
+                "timestamp": timestamp,
+                "is_open": False,
+                "session_date": session_date,
+                "session_open": None,
+                "session_close": None,
+            }
+
+        session = calendar[0]
+
+        return {
+            "timestamp": timestamp,
+            "is_open": bool(clock.is_open),
+            "session_date": session_date,
+            "session_open": to_aware_new_york(
+                session.open
+            ).astimezone(UTC),
+            "session_close": to_aware_new_york(
+                session.close
+            ).astimezone(UTC),
+        }
+
+    def fetch_daily_bars(self, symbols, now):
+        request = StockBarsRequest(
+            symbol_or_symbols=symbols,
+            timeframe=TimeFrame.Day,
+            start=now - timedelta(days=75),
+            end=now,
+            limit=10000,
+            feed=feed_enum(),
+        )
+        data = response_data(self.data_client.get_stock_bars(request))
+
+        return {
+            symbol: sorted(
+                list(data.get(symbol, [])),
+                key=lambda bar: bar.timestamp,
+            )
+            for symbol in symbols
+        }
+
+    def fetch_intraday_bars(self, symbols, session_open, now):
+        request = StockBarsRequest(
+            symbol_or_symbols=symbols,
+            timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+            start=session_open,
+            end=now,
+            limit=10000,
+            feed=feed_enum(),
+        )
+        data = response_data(self.data_client.get_stock_bars(request))
+
+        return {
+            symbol: sorted(
+                list(data.get(symbol, [])),
+                key=lambda bar: bar.timestamp,
+            )
+            for symbol in symbols
+        }
+
+    def fetch_latest_prices(self, symbols):
+        request = StockLatestTradeRequest(
+            symbol_or_symbols=symbols,
+            feed=feed_enum(),
+        )
+        data = response_data(
+            self.data_client.get_stock_latest_trade(request)
+        )
+
+        return {
+            symbol: float(trade.price)
+            for symbol, trade in data.items()
+            if trade is not None and trade.price is not None
+        }
+
+    @staticmethod
+    def completed_daily_bars(bars, session_date):
+        return [
+            bar
+            for bar in bars
+            if bar.timestamp.astimezone(NEW_YORK).date()
+            < session_date
+        ]
+
+    @staticmethod
+    def calculate_intraday_vwap(bars):
+        weighted_value = 0.0
+        total_volume = 0.0
+
+        for bar in bars:
+            volume = float(bar.volume or 0)
+
+            if volume <= 0:
+                continue
+
+            bar_vwap = getattr(bar, "vwap", None)
+
+            if bar_vwap is None:
+                bar_vwap = (
+                    float(bar.high)
+                    + float(bar.low)
+                    + float(bar.close)
+                ) / 3
+
+            weighted_value += float(bar_vwap) * volume
+            total_volume += volume
+
+        if total_volume <= 0:
+            return None
+
+        return weighted_value / total_volume
+
+    @staticmethod
+    def calculate_average_daily_vwap(bars, lookback_days):
+        values = [
+            float(bar.vwap)
+            for bar in bars
+            if getattr(bar, "vwap", None) is not None
+        ]
+
+        if len(values) < lookback_days:
+            return None
+
+        return mean(values[-lookback_days:])
+
+    @staticmethod
+    def calculate_atr_14(bars):
+        if len(bars) < 15:
+            return None
+
+        recent = bars[-15:]
+        true_ranges = []
+
+        for index in range(1, len(recent)):
+            current = recent[index]
+            previous = recent[index - 1]
+            high = float(current.high)
+            low = float(current.low)
+            previous_close = float(previous.close)
+            true_ranges.append(
+                max(
+                    high - low,
+                    abs(high - previous_close),
+                    abs(low - previous_close),
+                )
+            )
+
+        if len(true_ranges) < 14:
+            return None
+
+        return mean(true_ranges[-14:])
+
+    def calculate_market_state(
+        self,
+        latest_prices,
+        intraday_bars,
+    ):
+        proxy_state = {}
+
+        for symbol in PROXY_SYMBOLS:
+            price = latest_prices.get(symbol)
+            vwap = self.calculate_intraday_vwap(
+                intraday_bars.get(symbol, [])
+            )
+
+            if price is None or vwap is None:
+                proxy_state[symbol] = {
+                    "available": False,
+                    "price": price,
+                    "intraday_vwap": vwap,
+                    "weak": None,
+                }
+            else:
+                proxy_state[symbol] = {
+                    "available": True,
+                    "price": price,
+                    "intraday_vwap": vwap,
+                    "weak": price < vwap,
+                }
+
+        complete = all(
+            state["available"]
+            for state in proxy_state.values()
+        )
+        weak_count = (
+            sum(
+                1
+                for state in proxy_state.values()
+                if state["weak"] is True
+            )
+            if complete
+            else None
+        )
+
+        return {
+            "complete": complete,
+            "weak_indices_count": weak_count,
+            "proxies": proxy_state,
+        }
+
+    def downside_threshold(self, strategy, market_state):
+        threshold_map = self.config["market_regime"][
+            "long_entry_drop_pct_by_weak_proxy_count"
+        ][strategy]
+        key = (
+            str(market_state["weak_indices_count"])
+            if market_state["complete"]
+            else "missing"
+        )
+
+        return float(threshold_map[key])
+
+    def build_candidates_for_strategy(
+        self,
+        strategy,
+        symbols,
+        latest_prices,
+        daily_bars,
+        intraday_bars,
+        market_state,
+        session,
+    ):
+        strategy_config = self.config["stock_strategies"][strategy]
+        downside_threshold = self.downside_threshold(
+            strategy,
+            market_state,
+        )
+        upside_threshold = float(
+            strategy_config["base_short_rise_pct"]
+        )
+        max_candidates = int(
+            strategy_config["max_candidates_per_scan"]
+        )
+        candidates = []
+
+        for symbol in symbols:
+            latest_price = latest_prices.get(symbol)
+
+            if latest_price is None or latest_price <= 0:
+                continue
+
+            completed_bars = self.completed_daily_bars(
+                daily_bars.get(symbol, []),
+                session["session_date"],
+            )
+
+            if not completed_bars:
+                continue
+
+            previous_close = float(completed_bars[-1].close)
+            atr_14 = self.calculate_atr_14(completed_bars)
+
+            if atr_14 is None:
+                continue
+
+            intraday_vwap = self.calculate_intraday_vwap(
+                intraday_bars.get(symbol, [])
+            )
+
+            if strategy == "intraday":
+                reference_price = intraday_vwap
+                reference_type = "intraday_vwap"
+            else:
+                lookback_days = int(
+                    strategy_config["reference_lookback_days"]
+                )
+                reference_price = self.calculate_average_daily_vwap(
+                    completed_bars,
+                    lookback_days,
+                )
+                reference_type = (
+                    f"average_daily_vwap_{lookback_days}d"
+                )
+
+            if reference_price is None or reference_price <= 0:
+                continue
+
+            deviation_pct = (
+                latest_price - reference_price
+            ) / reference_price
+            deviation_side = None
+            threshold = None
+            technical_direction = None
+
+            if deviation_pct <= -downside_threshold:
+                if (
+                    strategy == "intraday"
+                    and latest_price >= previous_close
+                ):
+                    continue
+
+                deviation_side = "downside"
+                threshold = downside_threshold
+                technical_direction = (
+                    "long"
+                    if strategy == "intraday"
+                    else "router_decides"
+                )
+
+            elif deviation_pct >= upside_threshold:
+                if (
+                    strategy == "intraday"
+                    and latest_price <= previous_close
+                ):
+                    continue
+
+                deviation_side = "upside"
+                threshold = upside_threshold
+                technical_direction = (
+                    "short"
+                    if strategy == "intraday"
+                    else "router_decides"
+                )
+
+            if deviation_side is None:
+                continue
+
+            candidates.append(
+                TechnicalCandidate(
+                    symbol=symbol,
+                    strategy=strategy,
+                    deviation_side=deviation_side,
+                    technical_direction=technical_direction,
+                    signal_at=session["timestamp"],
+                    signal_price=latest_price,
+                    reference_price=reference_price,
+                    reference_type=reference_type,
+                    deviation_pct=deviation_pct,
+                    threshold_pct=threshold,
+                    atr_14=atr_14,
+                    atr_pct=atr_14 / latest_price,
+                    previous_close=previous_close,
+                    intraday_vwap=intraday_vwap,
+                    weak_indices_count=market_state[
+                        "weak_indices_count"
+                    ],
+                    market_state_complete=market_state["complete"],
+                )
+            )
+
+        candidates.sort(
+            key=lambda item: (
+                abs(item.deviation_pct) - item.threshold_pct,
+                abs(item.deviation_pct),
+            ),
+            reverse=True,
+        )
+
+        return candidates[:max_candidates]
+
+    def scan(self):
+        symbols = self.load_universe()
+        session = self.get_clock_and_session()
+
+        if not session["is_open"]:
+            return {
+                "status": "skipped",
+                "reason": "regular_market_not_open",
+                "config_version": self.config_version,
+                "universe_size": len(symbols),
+                "session": session,
+                "candidates": [],
+                "writes_performed": False,
+            }
+
+        requested_symbols = sorted(
+            set(symbols + PROXY_SYMBOLS)
+        )
+        daily_bars = self.fetch_daily_bars(
+            requested_symbols,
+            session["timestamp"],
+        )
+        intraday_bars = self.fetch_intraday_bars(
+            requested_symbols,
+            session["session_open"],
+            session["timestamp"],
+        )
+        latest_prices = self.fetch_latest_prices(requested_symbols)
+        market_state = self.calculate_market_state(
+            latest_prices,
+            intraday_bars,
+        )
+        candidates = []
+
+        for strategy in ("core", "active", "intraday"):
+            candidates.extend(
+                self.build_candidates_for_strategy(
+                    strategy=strategy,
+                    symbols=symbols,
+                    latest_prices=latest_prices,
+                    daily_bars=daily_bars,
+                    intraday_bars=intraday_bars,
+                    market_state=market_state,
+                    session=session,
+                )
+            )
+
+        return {
+            "status": "completed",
+            "config_version": self.config_version,
+            "universe_size": len(symbols),
+            "symbols_with_latest_price": sum(
+                1
+                for symbol in symbols
+                if symbol in latest_prices
+            ),
+            "session": session,
+            "market_state": market_state,
+            "candidates": [
+                asdict(candidate)
+                for candidate in candidates
+            ],
+            "writes_performed": False,
+        }
+
+    def health_check(self):
+        symbols = self.load_universe()
+        session = self.get_clock_and_session()
+
+        return {
+            "config_version": self.config_version,
+            "strategy_config_id": str(self.strategy_config_id),
+            "data_feed": ALPACA_DATA_FEED,
+            "universe_name": self.config["universes"]["base"],
+            "universe_size": len(symbols),
+            "proxy_symbols": PROXY_SYMBOLS,
+            "alpaca_clock_timestamp": session["timestamp"],
+            "market_open": session["is_open"],
+            "session_date": session["session_date"],
+            "writes_performed": False,
+        }
+
+
+def json_default(value):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    raise TypeError(
+        f"Object of type {type(value).__name__} is not JSON serializable"
+    )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="DELTAX production technical scanner."
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Run a read-only configuration, universe, and clock check.",
+    )
+    mode.add_argument(
+        "--preview",
+        action="store_true",
+        help="Run a complete read-only live technical scan.",
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    scanner = TechnicalScanner()
+    result = (
+        scanner.health_check()
+        if args.check
+        else scanner.scan()
+    )
+    print(
+        json.dumps(
+            result,
+            indent=2,
+            ensure_ascii=False,
+            default=json_default,
+        )
+    )
+    print("TECHNICAL SCANNER: OK")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(1)

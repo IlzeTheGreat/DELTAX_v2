@@ -1,0 +1,583 @@
+# File: deltax/scan_cycle.py
+# Purpose: Orchestrates one DELTAX production stock decision cycle.
+# It connects the technical scanner, fresh AI news context, deterministic
+# direction router, 10-minute Core/Active confirmation, and decision persistence.
+# It does NOT create trade intents and does NOT submit broker orders.
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import asdict
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+
+from alpaca.trading.requests import GetCalendarRequest
+
+try:
+    from deltax.decision_persistence import (
+        DecisionPersistence,
+        TradeThesisInput,
+    )
+    from deltax.direction_router import DirectionRouter, RouteCandidate
+    from deltax.news_context import NewsContextRepository
+    from deltax.technical_scanner import TechnicalScanner
+except ModuleNotFoundError:
+    from decision_persistence import DecisionPersistence, TradeThesisInput
+    from direction_router import DirectionRouter, RouteCandidate
+    from news_context import NewsContextRepository
+    from technical_scanner import TechnicalScanner
+
+
+SCANNER_NAME = "deltax_stock_decision_cycle_v1"
+CORE_ACTIVE_CONFIRMATION_MINUTES = 10
+CORE_ACTIVE_POST_CONFIRMATION_TTL_MINUTES = 15
+INTRADAY_THESIS_TTL_MINUTES = 5
+MAX_DUE_CONFIRMATIONS_PER_CYCLE = 100
+
+
+def json_default(value: Any):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
+def aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+class ScanCycle:
+    def __init__(self):
+        self.scanner = TechnicalScanner()
+        self.router = DirectionRouter.from_database()
+        self.news = NewsContextRepository()
+        self.persistence = DecisionPersistence()
+
+    def previous_session_close(self, session_date: date) -> datetime:
+        calendar = self.scanner.trading_client.get_calendar(
+            GetCalendarRequest(
+                start=session_date - timedelta(days=10),
+                end=session_date,
+            )
+        )
+
+        previous = [
+            session
+            for session in calendar
+            if session.date < session_date
+        ]
+
+        if not previous:
+            raise RuntimeError(
+                f"Could not resolve previous trading session before {session_date}"
+            )
+
+        value = previous[-1].close
+        if value.tzinfo is None or value.utcoffset() is None:
+            # Alpaca calendar times are America/New_York-local when naive.
+            from zoneinfo import ZoneInfo
+
+            value = value.replace(tzinfo=ZoneInfo("America/New_York"))
+
+        return value.astimezone(timezone.utc)
+
+    def asset_flags(self, symbols: list[str]) -> dict[str, dict[str, bool]]:
+        result: dict[str, dict[str, bool]] = {}
+
+        for symbol in sorted(set(symbols)):
+            try:
+                asset = self.scanner.trading_client.get_asset(symbol)
+                result[symbol] = {
+                    "shortable": bool(getattr(asset, "shortable", False)),
+                    "easy_to_borrow": bool(
+                        getattr(asset, "easy_to_borrow", False)
+                    ),
+                }
+            except Exception:
+                # Fail closed for shorts. Long routing is unaffected by these flags.
+                result[symbol] = {
+                    "shortable": False,
+                    "easy_to_borrow": False,
+                }
+
+        return result
+
+    def material_news_for_mode(
+        self,
+        candidate: RouteCandidate,
+        expected_direction: str,
+    ):
+        ai_direction = "bullish" if expected_direction == "long" else "bearish"
+        return [
+            analysis
+            for analysis in candidate.news_analyses
+            if self.router.is_material(analysis)
+            and analysis.direction == ai_direction
+        ]
+
+    def confirmation_due_at(
+        self,
+        candidate: RouteCandidate,
+        expected_direction: str,
+        mode: str,
+    ) -> datetime:
+        anchor = candidate.signal_at
+
+        if mode == "news_momentum":
+            matching = self.material_news_for_mode(
+                candidate,
+                expected_direction,
+            )
+            if matching:
+                latest_news = max(
+                    matching,
+                    key=lambda item: item.published_at,
+                ).published_at
+
+                if latest_news < candidate.session_open:
+                    anchor = candidate.session_open
+                else:
+                    anchor = latest_news.replace(second=0, microsecond=0)
+                    if latest_news.second or latest_news.microsecond:
+                        anchor += timedelta(minutes=1)
+
+        return anchor + timedelta(minutes=CORE_ACTIVE_CONFIRMATION_MINUTES)
+
+    def build_route_candidate(
+        self,
+        technical: dict[str, Any],
+        session: dict[str, Any],
+        previous_close: datetime,
+        news_map,
+        asset_map,
+        now: datetime,
+        confirmation_due_at: datetime | None = None,
+        confirmation_checked_at: datetime | None = None,
+        confirmation_price: float | None = None,
+    ) -> RouteCandidate:
+        flags = asset_map.get(
+            technical["symbol"],
+            {"shortable": False, "easy_to_borrow": False},
+        )
+
+        technical_direction = technical.get("technical_direction")
+        if technical_direction == "router_decides":
+            technical_direction = None
+
+        return RouteCandidate(
+            symbol=technical["symbol"],
+            strategy=technical["strategy"],
+            deviation_side=technical["deviation_side"],
+            signal_at=aware_utc(technical["signal_at"]),
+            signal_price=technical["signal_price"],
+            now=aware_utc(now),
+            news_analyses=news_map.get(technical["symbol"], []),
+            confirmation_due_at=confirmation_due_at,
+            confirmation_checked_at=confirmation_checked_at,
+            confirmation_price=confirmation_price,
+            technical_direction=technical_direction,
+            market_open=bool(session["is_open"]),
+            session_open=aware_utc(session["session_open"]),
+            previous_session_close=previous_close,
+            shortable=flags["shortable"],
+            easy_to_borrow=flags["easy_to_borrow"],
+        )
+
+    def initial_route(
+        self,
+        technical,
+        session,
+        previous_close,
+        news_map,
+        asset_map,
+        now,
+    ):
+        candidate = self.build_route_candidate(
+            technical,
+            session,
+            previous_close,
+            news_map,
+            asset_map,
+            now,
+        )
+
+        if candidate.strategy == "intraday":
+            return candidate, self.router.route(candidate)
+
+        # Give the router a valid provisional due time so it can determine
+        # direction/mode without prematurely rejecting the candidate.
+        candidate.confirmation_due_at = (
+            candidate.signal_at
+            + timedelta(minutes=CORE_ACTIVE_CONFIRMATION_MINUTES)
+        )
+        provisional = self.router.route(candidate)
+
+        if provisional.status == "rejected":
+            return candidate, provisional
+
+        candidate.confirmation_due_at = self.confirmation_due_at(
+            candidate,
+            provisional.direction,
+            provisional.mode,
+        )
+        decision = self.router.route(candidate)
+        return candidate, decision
+
+    def persist_new_decision(
+        self,
+        scan_run,
+        technical,
+        candidate,
+        decision,
+        market_state,
+    ):
+        if candidate.strategy == "intraday":
+            expires_at = candidate.signal_at + timedelta(
+                minutes=INTRADAY_THESIS_TTL_MINUTES
+            )
+        else:
+            expires_at = candidate.confirmation_due_at + timedelta(
+                minutes=CORE_ACTIVE_POST_CONFIRMATION_TTL_MINUTES
+            )
+
+        thesis = TradeThesisInput(
+            scan_run_id=scan_run.id,
+            strategy_config_id=scan_run.strategy_config_id,
+            symbol=candidate.symbol,
+            strategy=candidate.strategy,
+            direction=decision.direction,
+            status=decision.status,
+            signal_at=candidate.signal_at,
+            signal_price=candidate.signal_price,
+            expires_at=expires_at,
+            ai_analysis_id=decision.primary_ai_analysis_id,
+            reference_vwap=technical.get("reference_price"),
+            deviation_pct=technical.get("deviation_pct"),
+            atr_14=technical.get("atr_14"),
+            atr_pct=technical.get("atr_pct"),
+            weak_indices_count=technical.get("weak_indices_count"),
+            technical_state={
+                **decision.technical_state(candidate),
+                "reference_type": technical.get("reference_type"),
+                "threshold_pct": technical.get("threshold_pct"),
+                "previous_close": technical.get("previous_close"),
+                "intraday_vwap": technical.get("intraday_vwap"),
+            },
+            market_state=market_state or {},
+            sector_state={},
+            risk_state=decision.risk_state(candidate),
+            confirmation_due_at=candidate.confirmation_due_at,
+            confirmation_checked_at=candidate.confirmation_checked_at,
+            confirmation_price=candidate.confirmation_price,
+            confirmation_passed=decision.confirmation_passed,
+            rejection_reasons=decision.rejection_reasons,
+        )
+        return self.persistence.persist_trade_thesis(thesis)
+
+    @staticmethod
+    def technical_from_thesis(row) -> dict[str, Any]:
+        technical_state = row.get("technical_state") or {}
+        return {
+            "symbol": row["symbol"],
+            "strategy": row["strategy"],
+            "deviation_side": technical_state.get("deviation_side"),
+            "technical_direction": technical_state.get("technical_direction"),
+            "signal_at": row["signal_at"],
+            "signal_price": row["signal_price"],
+            "reference_price": row.get("reference_vwap"),
+            "reference_type": technical_state.get("reference_type"),
+            "deviation_pct": row.get("deviation_pct"),
+            "threshold_pct": technical_state.get("threshold_pct"),
+            "atr_14": row.get("atr_14"),
+            "atr_pct": row.get("atr_pct"),
+            "previous_close": technical_state.get("previous_close"),
+            "intraday_vwap": technical_state.get("intraday_vwap"),
+            "weak_indices_count": row.get("weak_indices_count"),
+        }
+
+    def process_due_confirmations(
+        self,
+        session,
+        previous_close,
+        news_map,
+        asset_map,
+        now,
+    ):
+        due = self.persistence.load_due_confirmations(
+            now=now,
+            limit=MAX_DUE_CONFIRMATIONS_PER_CYCLE,
+        )
+
+        if not due:
+            return []
+
+        symbols = sorted({row["symbol"] for row in due})
+        prices = self.scanner.fetch_latest_prices(symbols)
+        results = []
+
+        for row in due:
+            symbol = row["symbol"]
+            confirmation_price = prices.get(symbol)
+
+            if confirmation_price is None:
+                results.append(
+                    {
+                        "thesis_id": str(row["id"]),
+                        "symbol": symbol,
+                        "status": "deferred",
+                        "reason": "confirmation_price_unavailable",
+                    }
+                )
+                continue
+
+            technical = self.technical_from_thesis(row)
+            candidate = self.build_route_candidate(
+                technical,
+                session,
+                previous_close,
+                news_map,
+                asset_map,
+                now,
+                confirmation_due_at=row["confirmation_due_at"],
+                confirmation_checked_at=now,
+                confirmation_price=confirmation_price,
+            )
+            decision = self.router.route(candidate)
+
+            thesis = TradeThesisInput(
+                scan_run_id=row["scan_run_id"],
+                strategy_config_id=row["strategy_config_id"],
+                symbol=row["symbol"],
+                strategy=row["strategy"],
+                direction=decision.direction,
+                status=decision.status,
+                signal_at=row["signal_at"],
+                signal_price=row["signal_price"],
+                expires_at=row["expires_at"],
+                ai_analysis_id=decision.primary_ai_analysis_id,
+                reference_vwap=row.get("reference_vwap"),
+                deviation_pct=row.get("deviation_pct"),
+                atr_14=row.get("atr_14"),
+                atr_pct=row.get("atr_pct"),
+                weak_indices_count=row.get("weak_indices_count"),
+                technical_state={
+                    **(row.get("technical_state") or {}),
+                    **decision.technical_state(candidate),
+                },
+                market_state=row.get("market_state") or {},
+                sector_state=row.get("sector_state") or {},
+                risk_state=decision.risk_state(candidate),
+                confirmation_due_at=row["confirmation_due_at"],
+                confirmation_checked_at=now,
+                confirmation_price=confirmation_price,
+                confirmation_passed=decision.confirmation_passed,
+                rejection_reasons=decision.rejection_reasons,
+            )
+            saved = self.persistence.persist_trade_thesis(thesis)
+            results.append(
+                {
+                    "thesis_id": str(saved["id"]),
+                    "symbol": symbol,
+                    "strategy": row["strategy"],
+                    "direction": decision.direction,
+                    "status": decision.status,
+                    "confirmation_price": confirmation_price,
+                    "confirmation_passed": decision.confirmation_passed,
+                    "rejection_reasons": decision.rejection_reasons,
+                }
+            )
+
+        return results
+
+    def check(self):
+        scanner = self.scanner.health_check()
+        router = self.router.health_check()
+        news = self.news.health_check()
+        persistence = self.persistence.health_check()
+        return {
+            "scanner": scanner,
+            "router": router,
+            "news": news,
+            "persistence": persistence,
+            "trade_intents_created": False,
+            "broker_orders_submitted": False,
+            "writes_performed": False,
+        }
+
+    def run(self):
+        scan = self.scanner.scan()
+        session = scan["session"]
+        now = aware_utc(session["timestamp"])
+
+        if scan["status"] == "skipped":
+            return {
+                "status": "skipped",
+                "reason": scan.get("reason"),
+                "session": session,
+                "trade_intents_created": False,
+                "broker_orders_submitted": False,
+            }
+
+        previous_close = self.previous_session_close(
+            session["session_date"]
+        )
+        candidates = scan.get("candidates", [])
+        candidate_symbols = [item["symbol"] for item in candidates]
+
+        due = self.persistence.load_due_confirmations(
+            now=now,
+            limit=MAX_DUE_CONFIRMATIONS_PER_CYCLE,
+        )
+        due_symbols = [row["symbol"] for row in due]
+        all_symbols = sorted(set(candidate_symbols + due_symbols))
+
+        news_map = self.news.load_current_session_context(
+            symbols=all_symbols,
+            previous_session_close=previous_close,
+            now=now,
+        )
+        asset_map = self.asset_flags(all_symbols)
+
+        scan_run = self.persistence.start_scan_run(
+            scanner_name=SCANNER_NAME,
+            scheduled_for=now,
+            market_open=True,
+            symbols_requested=scan.get("universe_size", 0),
+            metadata={
+                "config_version": scan.get("config_version"),
+                "candidate_count": len(candidates),
+                "market_state": scan.get("market_state", {}),
+            },
+        )
+
+        if not scan_run.created and scan_run.status != "running":
+            return {
+                "status": "skipped",
+                "reason": "scan_cycle_already_completed",
+                "scan_run_id": str(scan_run.id),
+                "scheduled_for": scan_run.scheduled_for,
+            }
+
+        new_results = []
+        terminal_status = "completed"
+        error_message = None
+
+        try:
+            for technical in candidates:
+                candidate, decision = self.initial_route(
+                    technical,
+                    session,
+                    previous_close,
+                    news_map,
+                    asset_map,
+                    now,
+                )
+                saved = self.persist_new_decision(
+                    scan_run,
+                    technical,
+                    candidate,
+                    decision,
+                    scan.get("market_state", {}),
+                )
+                new_results.append(
+                    {
+                        "thesis_id": str(saved["id"]),
+                        "symbol": candidate.symbol,
+                        "strategy": candidate.strategy,
+                        "direction": decision.direction,
+                        "status": decision.status,
+                        "mode": decision.mode,
+                        "confirmation_due_at": candidate.confirmation_due_at,
+                        "rejection_reasons": decision.rejection_reasons,
+                    }
+                )
+
+            # Finish the current scan before cross-scan confirmation updates.
+            self.persistence.finish_scan_run(
+                scan_run_id=scan_run.id,
+                status="completed",
+                symbols_processed=scan.get(
+                    "symbols_with_latest_price",
+                    scan.get("universe_size", 0),
+                ),
+                signals_found=len(candidates),
+                metadata={"routed_candidates": len(new_results)},
+            )
+
+            confirmation_results = self.process_due_confirmations(
+                session,
+                previous_close,
+                news_map,
+                asset_map,
+                now,
+            )
+
+            return {
+                "status": "completed",
+                "scan_run_id": str(scan_run.id),
+                "scheduled_for": scan_run.scheduled_for,
+                "universe_size": scan.get("universe_size"),
+                "technical_candidates": len(candidates),
+                "new_decisions": new_results,
+                "due_confirmation_results": confirmation_results,
+                "trade_intents_created": False,
+                "broker_orders_submitted": False,
+            }
+
+        except Exception as error:
+            terminal_status = "failed"
+            error_message = str(error)
+            try:
+                self.persistence.finish_scan_run(
+                    scan_run_id=scan_run.id,
+                    status=terminal_status,
+                    symbols_processed=scan.get(
+                        "symbols_with_latest_price",
+                        0,
+                    ),
+                    signals_found=len(new_results),
+                    error_message=error_message,
+                )
+            except Exception:
+                pass
+            raise
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="DELTAX production stock decision-cycle orchestrator."
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Read-only component health check. No writes and no orders.",
+    )
+    mode.add_argument(
+        "--run",
+        action="store_true",
+        help=(
+            "Run one decision cycle and persist scan_runs/trade_theses. "
+            "Does not create trade intents or broker orders."
+        ),
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    cycle = ScanCycle()
+    result = cycle.check() if args.check else cycle.run()
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=json_default))
+    print("SCAN CYCLE: OK")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        sys.exit(1)
