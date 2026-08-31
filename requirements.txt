@@ -14,3 +14,7 @@ websockets>=12,<17
 psycopg[binary]>=3.3,<4.0
 
 openai>=3.6,<4.0
+
+streamlit>=1.40,<2.0
+
+pandas-market-calendars>=4.4,<6.0
