@@ -483,7 +483,7 @@ with title_col:
     market_status = "OPEN" if clock.get("is_open") else "CLOSED"
     hero_html = (
         '<div class="hero">'
-        '<div class="hero-title">DELTAX AI Sector Rotation</div>'
+        '<div class="hero-title">DELTAX ETF</div>'
         '<div class="hero-sub">Autonomous paper-trading agent · AI market intelligence + deterministic price confirmation · Alpaca EVENT account</div>'
         '<span class="badge">EVENT $100K</span>'
         '<span class="badge">ETF LONG / SHORT</span>'
