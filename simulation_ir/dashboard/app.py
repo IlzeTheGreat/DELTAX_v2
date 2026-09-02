@@ -25,6 +25,7 @@ DASHBOARD_DIR = Path(__file__).resolve().parent
 ROOT_DIR = DASHBOARD_DIR.parent
 ENV_PATH = ROOT_DIR / ".env"
 LOG_FILE = ROOT_DIR / "logs" / "etf_trading_cycle.log"
+LOGO_FILE = DASHBOARD_DIR / "assets" / "2026_Deltax_AI.png"
 
 NY = ZoneInfo("America/New_York")
 RIGA = ZoneInfo("Europe/Riga")
@@ -468,6 +469,30 @@ gross_exposure = sum(abs(float(p.get("market_value") or 0.0)) for p in etf_posit
 market_ai_records, ai_err = load_market_ai()
 ai_impacts_df, ai_events = parse_ai_rows(market_ai_records)
 
+logo_col, title_col = st.columns([1, 5])
+
+with logo_col:
+    if LOGO_FILE.exists():
+        st.image(str(LOGO_FILE), width=150)
+
+with title_col:
+    st.markdown(
+        f"""
+        <div class="hero">
+            <div class="hero-title">DELTAX AI Sector Rotation</div>
+            <div class="hero-sub">
+                Autonomous paper-trading agent · AI market regime + deterministic price confirmation · Alpaca EVENT account
+            </div>
+            <div style="margin-top:13px;">
+                <span class="badge">EVENT $100K</span>
+                <span class="badge">ETF LONG / SHORT</span>
+                <span class="badge">5-min execution</span>
+                <span class="badge">Exit-first risk control</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # -----------------------------------------------------------------------------
 # Hero
