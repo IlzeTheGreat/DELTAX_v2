@@ -32,18 +32,14 @@ def find_project_root(start: Path) -> Path:
     return start.parent
 
 
-ROOT_DIR = find_project_root(SCRIPT_DIR)
+DASHBOARD_DIR = Path(__file__).resolve().parent
+SIMULATION_DIR = DASHBOARD_DIR.parent
+ROOT_DIR = SIMULATION_DIR.parent
+
 ENV_PATH = ROOT_DIR / ".env"
 LOG_FILE = ROOT_DIR / "logs" / "etf_trading_cycle.log"
 
-# Search several sensible locations instead of assuming where this script lives.
-LOGO_CANDIDATES = [
-    ROOT_DIR / "dashboard" / "assets" / "2026_Deltax_AI.png",
-    SCRIPT_DIR / "assets" / "2026_Deltax_AI.png",
-    SCRIPT_DIR.parent / "dashboard" / "assets" / "2026_Deltax_AI.png",
-    ROOT_DIR / "assets" / "2026_Deltax_AI.png",
-]
-LOGO_FILE = next((p for p in LOGO_CANDIDATES if p.exists()), None)
+LOGO_FILE = ROOT_DIR / "dashboard" / "assets" / "2026_Deltax_AI.png"
 
 NY = ZoneInfo("America/New_York")
 RIGA = ZoneInfo("Europe/Riga")
