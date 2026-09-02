@@ -297,6 +297,11 @@
       "exits_done": true,
       "orders": {},
       "signals": {}
+    },
+    "2026-09-01": {
+      "exits_done": true,
+      "orders": {},
+      "signals": {}
     }
   },
   "version": 2

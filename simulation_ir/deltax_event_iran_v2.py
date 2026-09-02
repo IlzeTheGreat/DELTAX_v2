@@ -80,7 +80,7 @@ MIN_EVENT_GAP = 0.0050          # 0.50%
 MIN_REVERSAL_10M = 0.0025       # 0.25%
 
 ENTRY_DECISION_TIME = dt_time(9, 40)
-ENTRY_CUTOFF_TIME = dt_time(10, 00)
+ENTRY_CUTOFF_TIME = dt_time(15, 00)
 EXIT_TIME = dt_time(15, 50)
 
 # Position sizing
