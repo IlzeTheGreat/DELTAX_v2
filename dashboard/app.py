@@ -583,7 +583,7 @@ if LOGO_PATH.exists():
                 letter-spacing:1.5px;
                 margin:0;
             ">
-                DELTAX
+                DELTAX V2
             </div>
         </div>
         """,

@@ -87,7 +87,7 @@ HEADERS = {
 # =============================================================================
 
 st.set_page_config(
-    page_title="DELTAX AI Sector Rotation",
+    page_title="DELTAX ETF",
     page_icon="🍀",
     layout="wide",
     initial_sidebar_state="collapsed",
