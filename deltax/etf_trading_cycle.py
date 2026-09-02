@@ -356,8 +356,16 @@ def main() -> int:
     summary["stages"].append(entry_result)
 
     if not entry_result["ok"]:
-        summary["status"] = "failed"
-        summary["entry_gate"] = "ENTRY_STAGE_FAILED"
+        early_confirmation_message = (
+            "Live confirmation starts at" in (entry_result.get("stdout") or "")
+        )
+
+        if early_confirmation_message:
+            summary["status"] = "waiting_for_confirmation"
+            summary["entry_gate"] = "BLOCK_BEFORE_0940_ET"
+        else:
+            summary["status"] = "failed"
+            summary["entry_gate"] = "ENTRY_STAGE_FAILED"
 
     summary["total_duration_seconds"] = round(time.monotonic() - started, 3)
     log("ETF_CYCLE END " + json.dumps(summary, ensure_ascii=False, default=str))
