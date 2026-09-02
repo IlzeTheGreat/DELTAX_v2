@@ -1,11 +1,6 @@
-# File: deltax/news_worker.py
-# Purpose: Slow/background DELTAX news pipeline.
-# Run independently from the 5-minute trading cycle.
-#
-# Stages:
-#   market news providers -> market clustering -> market-impact AI
-#   -> company news ingestion/clustering -> company-news AI
-#
+# File: deltax/market_news_worker.py
+# Purpose: Fast/shared DELTAX market-news pipeline for stock/options + ETF bots.
+# Runs independently from company-specific news processing.
 # No trade intents or broker orders are created here.
 
 from __future__ import annotations
@@ -29,7 +24,8 @@ load_dotenv()
 DATABASE_URL = os.environ["DATABASE_URL"]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-LOCK_KEY = 4200260831
+# Separate lock from company worker so both pipelines may run simultaneously.
+LOCK_KEY = 4200260901
 MAX_OUTPUT_CHARS = 12000
 
 
@@ -43,11 +39,10 @@ def compact(value: str) -> str:
 def run_stage(name: str, args: list[str]) -> dict[str, Any]:
     started = datetime.now(timezone.utc)
     t0 = time.monotonic()
+
     child_env = os.environ.copy()
-    # Scheduled Tasks on Windows can inherit a legacy console encoding
-    # (for example cp1252). News/AI text can contain Unicode characters such
-    # as non-breaking hyphens, which would otherwise crash a child process
-    # while writing captured stdout/stderr.
+    # Windows Scheduled Tasks may inherit cp1252/charmap. Force UTF-8 because
+    # financial news routinely contains Unicode punctuation.
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
 
@@ -61,6 +56,7 @@ def run_stage(name: str, args: list[str]) -> dict[str, Any]:
         env=child_env,
         check=False,
     )
+
     return {
         "stage": name,
         "ok": process.returncode == 0,
@@ -79,87 +75,76 @@ def acquire_lock(connection) -> bool:
 
 
 def release_lock(connection) -> None:
-    # Session-level advisory locks are automatically released by Postgres if
-    # the connection dies. Unlock is therefore best-effort and must never turn
-    # a successful multi-minute news run into a failed worker.
     try:
         if connection.closed:
             return
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
     except psycopg.Error as exc:
-        print(f"NEWS WORKER LOCK RELEASE WARNING: {exc}", file=sys.stderr)
+        print(f"MARKET NEWS WORKER LOCK RELEASE WARNING: {exc}", file=sys.stderr)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="DELTAX background news worker")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="DELTAX market-news worker")
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--market-lookback-hours", type=int, default=12)
-    parser.add_argument("--company-lookback-hours", type=int, default=24)
-    parser.add_argument("--market-ai-limit", type=int, default=10)
-    parser.add_argument("--company-ai-limit", type=int, default=10)
+    parser.add_argument("--lookback-hours", type=int, default=12)
+    parser.add_argument("--ai-since-hours", type=int, default=48)
+    parser.add_argument("--ai-limit", type=int, default=10)
+    parser.add_argument("--max-events", type=int, default=100)
     args = parser.parse_args()
 
-    # Advisory-lock connection must not sit idle inside a transaction while
-    # OpenAI/news subprocesses run for several minutes. autocommit keeps the
-    # session lock alive without triggering idle_in_transaction_session_timeout.
     with psycopg.connect(DATABASE_URL, autocommit=True) as lock_connection:
         if not acquire_lock(lock_connection):
             print(json.dumps({
                 "status": "skipped",
-                "reason": "news_worker_already_running",
+                "reason": "market_news_worker_already_running",
             }, indent=2))
-            print("NEWS WORKER: OK")
+            print("MARKET NEWS WORKER: OK")
             return
 
         try:
-            stages = []
+            stages: list[dict[str, Any]] = []
 
             if args.check:
                 checks = [
                     ("market_news_ingestion", [
                         "deltax/market_news_ingestion.py", "--check",
                         "--source", "all",
-                        "--lookback-hours", str(args.market_lookback_hours),
+                        "--lookback-hours", str(args.lookback_hours),
                     ]),
                     ("market_event_clustering", [
                         "deltax/market_event_clustering.py", "--check",
-                        "--lookback-hours", "48",
+                        "--lookback-hours", str(args.ai_since_hours),
                     ]),
                     ("market_impact_ai", [
                         "deltax/market_impact_ai.py", "--check",
-                        "--since-hours", "48",
-                    ]),
-                    ("company_news_ingestion", [
-                        "deltax/company_news_ingestion.py", "--check",
-                    ]),
-                    ("company_news_ai", [
-                        "deltax/news_ai_processor.py", "--check",
-                        "--since-hours", "72",
-                        "--limit", str(args.company_ai_limit),
+                        "--since-hours", str(args.ai_since_hours),
                     ]),
                 ]
-
                 for name, command in checks:
                     result = run_stage(name, command)
                     stages.append(result)
                     if not result["ok"]:
                         break
-
             else:
                 provider_results = []
+
+                # Alpaca is first because it is the freshest/most directly useful
+                # source for our managed universe and ETF layer.
                 for provider in ("alpaca", "finnhub", "marketaux"):
                     result = run_stage(
                         f"market_news_ingestion_{provider}",
                         [
                             "deltax/market_news_ingestion.py", "--apply",
                             "--source", provider,
-                            "--lookback-hours", str(args.market_lookback_hours),
+                            "--lookback-hours", str(args.lookback_hours),
                         ],
                     )
                     stages.append(result)
                     provider_results.append(result)
 
+                # Continue if at least one provider works. One flaky provider must
+                # not block the whole market-intelligence pipeline.
                 if not any(item["ok"] for item in provider_results):
                     print(json.dumps({
                         "status": "failed",
@@ -171,22 +156,13 @@ def main():
                 pipeline = [
                     ("market_event_clustering", [
                         "deltax/market_event_clustering.py", "--apply",
-                        "--lookback-hours", "48",
-                        "--max-events", "100",
+                        "--lookback-hours", str(args.ai_since_hours),
+                        "--max-events", str(args.max_events),
                     ]),
                     ("market_impact_ai", [
                         "deltax/market_impact_ai.py", "--process",
-                        "--since-hours", "48",
-                        "--limit", str(args.market_ai_limit),
-                    ]),
-                    ("company_news_ingestion", [
-                        "deltax/company_news_ingestion.py", "--apply",
-                        "--lookback-hours", str(args.company_lookback_hours),
-                    ]),
-                    ("company_news_ai", [
-                        "deltax/news_ai_processor.py", "--process",
-                        "--since-hours", "72",
-                        "--limit", str(args.company_ai_limit),
+                        "--since-hours", str(args.ai_since_hours),
+                        "--limit", str(args.ai_limit),
                     ]),
                 ]
 
@@ -200,6 +176,7 @@ def main():
             print(json.dumps({
                 "status": "ok" if ok else "failed",
                 "mode": "check" if args.check else "run",
+                "worker": "market_news",
                 "stages": stages,
                 "total_duration_seconds": round(
                     sum(item["duration_seconds"] for item in stages), 3
@@ -211,7 +188,7 @@ def main():
             if not ok:
                 sys.exit(1)
 
-            print("NEWS WORKER: OK")
+            print("MARKET NEWS WORKER: OK")
         finally:
             release_lock(lock_connection)
 

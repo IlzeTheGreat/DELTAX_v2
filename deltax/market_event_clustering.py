@@ -20,7 +20,7 @@ from psycopg.types.json import Jsonb
 
 
 CLUSTERING_VERSION = "deltax_market_cluster_v1"
-MARKET_SOURCES = ("finnhub_news", "marketaux_news")
+MARKET_SOURCES = ("alpaca_news", "finnhub_news", "marketaux_news")
 DEFAULT_LOOKBACK_HOURS = 48
 DEFAULT_MAX_EVENTS = 100
 MAX_CLUSTER_GAP_MINUTES = 360
@@ -133,8 +133,15 @@ def match_score(event: SourceEvent, cluster: ClusterState) -> float | None:
 
     similarity = jaccard(event.tokens, cluster.representative_tokens)
     shared_risks = event.risks & cluster.risks
-    if shared_risks and similarity >= SIMILARITY_WITH_SHARED_RISK:
+
+    # "etf_symbol_news" is only an ingestion label, not a real event type.
+    # Do not let it by itself lower the similarity threshold, otherwise
+    # unrelated ETF-tagged stories can be merged into one cluster.
+    meaningful_shared_risks = shared_risks - {"etf_symbol_news"}
+
+    if meaningful_shared_risks and similarity >= SIMILARITY_WITH_SHARED_RISK:
         return 1.0 + similarity
+
     if similarity >= SIMILARITY_WITHOUT_SHARED_RISK:
         return similarity
     return None
