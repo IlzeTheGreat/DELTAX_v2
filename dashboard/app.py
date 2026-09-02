@@ -41,15 +41,25 @@ LOGO_PATH = (
 
 def as_nyse_time(value):
     """Return timestamp formatted in America/New_York."""
-    if value is None:
+    if value is None or pd.isna(value):
         return "—"
 
-    ts = pd.Timestamp(value)
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return "—"
+
+    if pd.isna(ts):
+        return "—"
 
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
 
     ts = ts.tz_convert("America/New_York")
+
+    if pd.isna(ts):
+        return "—"
+
     return ts.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
