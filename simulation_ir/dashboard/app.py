@@ -88,7 +88,7 @@ HEADERS = {
 
 st.set_page_config(
     page_title="DELTAX AI Sector Rotation",
-    page_icon="Δ",
+    page_icon="🍀",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
