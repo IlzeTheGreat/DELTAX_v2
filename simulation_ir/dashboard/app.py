@@ -117,7 +117,7 @@ st.markdown("""
 }
 
 .block-container {
-    padding-top: 2rem;
+    padding-top: 3rem;
     padding-bottom: 3rem;
     max-width: 1540px;
 }
@@ -735,7 +735,6 @@ with st.expander("System / data status"):
         "script_dir": str(SCRIPT_DIR),
         "logo_found": bool(LOGO_FILE),
         "logo_path": str(LOGO_FILE) if LOGO_FILE else None,
-        "logo_candidates": [str(p) for p in LOGO_CANDIDATES],
         "alpaca_event_account": "OK" if not account_err else account_err,
         "alpaca_clock": "OK" if not clock_err else clock_err,
         "alpaca_positions": "OK" if not positions_err else positions_err,
