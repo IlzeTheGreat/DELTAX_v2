@@ -857,8 +857,14 @@ if week_df.empty:
     st.info("No portfolio snapshots are available for the current contest week yet.")
 else:
     chart_df = week_df[["captured_at", "equity"]].copy()
-    chart_df["captured_at"] = chart_df["captured_at"].dt.tz_convert("America/New_York")
-    chart_df = chart_df.set_index("captured_at")
+
+    # All contest-week chart timestamps are displayed and grouped in NYSE / ET.
+    chart_df["captured_at"] = pd.to_datetime(
+        chart_df["captured_at"],
+        utc=True,
+        errors="coerce",
+    ).dt.tz_convert("America/New_York")
+    chart_df = chart_df.dropna(subset=["captured_at"]).set_index("captured_at")
     chart_df["$100k start"] = STARTING_EQUITY
 
     week_start_equity = float(chart_df["equity"].iloc[0])
@@ -890,7 +896,13 @@ else:
             value_name="Equity",
         )
     )
-    chart_plot["captured_at"] = chart_plot["captured_at"].astype(str)
+    # Keep a fixed NYSE/ET wall-clock timestamp for Vega-Lite.
+    # Removing the timezone offset prevents the browser from converting it back
+    # into the viewer's local timezone.
+    chart_plot["captured_at"] = pd.to_datetime(
+        chart_plot["captured_at"],
+        errors="coerce",
+    ).dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     visible_max = max(
         100000.0,
@@ -912,7 +924,7 @@ else:
     day_df["label"] = pd.to_datetime(day_df["day"]).dt.strftime("%a %b %d").str.upper()
     day_values = [
         {
-            "captured_at": row["captured_at"].isoformat(),
+            "captured_at": row["captured_at"].strftime("%Y-%m-%dT%H:%M:%S"),
             "label": row["label"],
         }
         for _, row in day_df.iterrows()
