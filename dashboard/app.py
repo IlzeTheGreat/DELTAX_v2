@@ -1019,15 +1019,15 @@ else:
                     "encoding": {
                         "x": {"value": 16},
                         "x2": {"value": 176},
-                        "y": {"value": 16},
-                        "y2": {"value": 92},
+                        "y": {"value": 118},
+                        "y2": {"value": 194},
                     },
                 },
                 {
                     "data": {
                         "values": [
-                            {"label": "WEEK HIGH", "value": f"${week_high:,.2f}", "y": 34},
-                            {"label": "WEEK LOW", "value": f"${week_low:,.2f}", "y": 67},
+                            {"label": "WEEK HIGH", "value": f"${week_high:,.2f}", "y": 136},
+                            {"label": "WEEK LOW", "value": f"${week_low:,.2f}", "y": 169},
                         ]
                     },
                     "mark": {
@@ -1047,8 +1047,8 @@ else:
                 {
                     "data": {
                         "values": [
-                            {"value": f"${week_high:,.2f}", "y": 48},
-                            {"value": f"${week_low:,.2f}", "y": 81},
+                            {"value": f"${week_high:,.2f}", "y": 150},
+                            {"value": f"${week_low:,.2f}", "y": 183},
                         ]
                     },
                     "mark": {
