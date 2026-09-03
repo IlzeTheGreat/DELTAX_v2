@@ -164,60 +164,196 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+        :root {
+            --dx-bg: #030707;
+            --dx-panel: #071010;
+            --dx-panel-2: #091515;
+            --dx-cyan: #38e7e7;
+            --dx-cyan-soft: rgba(56,231,231,0.16);
+            --dx-text: #e8f4f4;
+            --dx-muted: #7f9999;
+            --dx-red: #ff7b83;
+            --dx-gold: #e7bf5b;
+            --dx-line: rgba(56,231,231,0.20);
+        }
+
+        .stApp {
+            background:
+                linear-gradient(rgba(56,231,231,0.025) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(56,231,231,0.025) 1px, transparent 1px),
+                var(--dx-bg);
+            background-size: 48px 48px;
+            color: var(--dx-text);
+        }
+
         .block-container {
-            padding-top: 2.6rem;
-            padding-bottom: 2rem;
+            max-width: 1520px;
+            padding-top: 2.0rem;
+            padding-bottom: 3rem;
+        }
+
+        header[data-testid="stHeader"] {
+            background: rgba(3,7,7,0.82);
+        }
+
+        .dx-hero {
+            display:flex;
+            align-items:center;
+            gap:22px;
+            margin-bottom:10px;
+        }
+
+        .dx-logo {
+            width:112px;
+            height:auto;
+            filter: drop-shadow(0 0 18px rgba(56,231,231,0.28));
+        }
+
+        .dx-brand {
+            font-size:46px;
+            line-height:1;
+            font-weight:800;
+            letter-spacing:0.24em;
+            color:#eefafa;
+            margin:0;
+        }
+
+        .dx-tagline {
+            margin-top:12px;
+            color:var(--dx-muted);
+            font-size:0.82rem;
+            letter-spacing:0.30em;
+            text-transform:uppercase;
+        }
+
+        .dx-badges {
+            display:flex;
+            gap:10px;
+            flex-wrap:wrap;
+            margin:14px 0 18px 0;
+        }
+
+        .dx-badge {
+            border:1px solid var(--dx-line);
+            color:var(--dx-muted);
+            padding:7px 13px;
+            border-radius:3px;
+            font-size:0.72rem;
+            letter-spacing:0.15em;
+            text-transform:uppercase;
+            background:rgba(6,15,15,0.72);
+        }
+
+        .dx-badge.primary {
+            color:var(--dx-cyan);
+            border-color:rgba(56,231,231,0.58);
+        }
+
+        .dx-panel {
+            border:1px solid var(--dx-line);
+            background:linear-gradient(180deg, rgba(8,20,20,0.94), rgba(5,12,12,0.94));
+            padding:20px 24px;
+            margin:0 0 18px 0;
+            border-radius:2px;
+            box-shadow: inset 0 0 30px rgba(56,231,231,0.015);
+        }
+
+        .dx-kicker {
+            color:var(--dx-muted);
+            font-size:0.72rem;
+            letter-spacing:0.20em;
+            text-transform:uppercase;
+            margin-bottom:6px;
+        }
+
+        .dx-value {
+            color:#effbfb;
+            font-size:2.7rem;
+            line-height:1.05;
+            font-weight:800;
+            letter-spacing:0.03em;
+        }
+
+        .dx-value.red {
+            color:var(--dx-red);
+        }
+
+        .dx-value.cyan {
+            color:var(--dx-cyan);
+        }
+
+        .dx-sub {
+            color:var(--dx-muted);
+            font-size:0.78rem;
+            letter-spacing:0.08em;
+            margin-top:7px;
         }
 
         .dx-section {
-            border: 1px solid rgba(128,128,128,0.20);
-            border-radius: 14px;
-            padding: 14px 16px 10px 16px;
-            margin: 8px 0 14px 0;
-            background: rgba(255,255,255,0.015);
+            border-top:1px solid rgba(56,231,231,0.42);
+            padding:14px 0 8px 0;
+            margin:20px 0 8px 0;
+            background:transparent;
         }
 
         .dx-section-title {
-            font-size: 0.82rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            opacity: 0.72;
-            margin-bottom: 4px;
+            font-size:0.78rem;
+            font-weight:800;
+            letter-spacing:0.24em;
+            text-transform:uppercase;
+            color:var(--dx-cyan);
         }
 
         .dx-section-subtitle {
-            font-size: 0.88rem;
-            opacity: 0.62;
-            margin-bottom: 6px;
+            font-size:0.84rem;
+            color:var(--dx-muted);
+            margin-top:7px;
         }
 
         .dx-flow {
-            border-left: 3px solid rgba(100,149,237,0.55);
-            padding-left: 14px;
-            margin: 8px 0 14px 0;
-        }
-
-        .dx-muted {
-            opacity: 0.65;
-            font-size: 0.88rem;
-        }
-
-        .dx-card-title {
-            font-weight: 700;
-            font-size: 1.02rem;
-            margin-bottom: 2px;
+            border-left:3px solid rgba(56,231,231,0.52);
+            padding:10px 0 10px 14px;
+            margin:8px 0 14px 0;
+            color:#b8cccc;
         }
 
         div[data-testid="stMetric"] {
-            border: 1px solid rgba(128,128,128,0.16);
-            border-radius: 12px;
-            padding: 10px 12px;
-            background: rgba(255,255,255,0.012);
+            border:1px solid var(--dx-line);
+            border-radius:2px;
+            padding:12px 14px;
+            background:rgba(7,16,16,0.90);
+        }
+
+        div[data-testid="stMetric"] label {
+            color:var(--dx-muted) !important;
+            letter-spacing:0.10em;
+            text-transform:uppercase;
+        }
+
+        div[data-testid="stMetricValue"] {
+            color:#effbfb;
         }
 
         div[data-testid="stExpander"] {
-            border-radius: 12px;
+            border:1px solid var(--dx-line);
+            border-radius:2px;
+            background:rgba(7,16,16,0.72);
+        }
+
+        div[data-testid="stDataFrame"] {
+            border:1px solid rgba(56,231,231,0.14);
+        }
+
+        button[data-baseweb="tab"] {
+            color:#91a8a8;
+        }
+
+        button[data-baseweb="tab"][aria-selected="true"] {
+            color:var(--dx-cyan);
+        }
+
+        hr {
+            border-color:rgba(56,231,231,0.18);
         }
     </style>
     """,
@@ -268,6 +404,20 @@ def load_dashboard():
         FROM portfolio_snapshots
         ORDER BY captured_at DESC
         LIMIT 1
+        """
+    )
+
+    portfolio_history = query(
+        """
+        SELECT
+            captured_at,
+            equity,
+            daily_pnl,
+            daily_pnl_pct
+        FROM portfolio_snapshots
+        WHERE captured_at >= NOW() - INTERVAL '8 days'
+        ORDER BY captured_at ASC
+        LIMIT 5000
         """
     )
 
@@ -419,6 +569,7 @@ def load_dashboard():
     return {
         "control": control[0] if control else {},
         "portfolio": portfolio[0] if portfolio else {},
+        "portfolio_history": portfolio_history,
         "positions": positions,
         "decisions": decisions,
         "option_legs": option_legs,
@@ -551,172 +702,225 @@ def badge(value):
     return str(value or "—").upper()
 
 
+STARTING_EQUITY = 100000.0
+
+
+def contest_week_history(rows):
+    """Return portfolio snapshots from Monday 00:00 ET of the current week."""
+    if not rows:
+        return pd.DataFrame(columns=["captured_at", "equity"])
+
+    df = pd.DataFrame(rows)
+    if df.empty or "captured_at" not in df.columns or "equity" not in df.columns:
+        return pd.DataFrame(columns=["captured_at", "equity"])
+
+    df["captured_at"] = pd.to_datetime(df["captured_at"], utc=True, errors="coerce")
+    df["equity"] = pd.to_numeric(df["equity"], errors="coerce")
+    df = df.dropna(subset=["captured_at", "equity"]).sort_values("captured_at")
+
+    now_et = pd.Timestamp.now(tz="America/New_York")
+    monday_et = (now_et - pd.Timedelta(days=now_et.weekday())).normalize()
+    monday_utc = monday_et.tz_convert("UTC")
+
+    return df[df["captured_at"] >= monday_utc].copy()
+
+
 data = load_dashboard()
 control = data["control"]
 portfolio = data["portfolio"]
+market = nyse_market_state()
+week_df = contest_week_history(data.get("portfolio_history", []))
+
+current_equity = float(portfolio.get("equity") or STARTING_EQUITY)
+loss_since_start = current_equity - STARTING_EQUITY
+loss_since_start_pct = loss_since_start / STARTING_EQUITY
+
+daily_pnl = float(portfolio.get("daily_pnl") or 0.0)
+daily_pnl_pct = float(portfolio.get("daily_pnl_pct") or 0.0)
+
+open_positions = (
+    int(portfolio.get("open_stock_positions") or 0)
+    + int(portfolio.get("open_options_positions") or 0)
+)
 
 if LOGO_PATH.exists():
-    logo_b64 = base64.b64encode(
-        LOGO_PATH.read_bytes()
-    ).decode("ascii")
-
-    st.markdown(
-        f"""
-        <div style="
-            display:flex;
-            align-items:center;
-            gap:18px;
-            margin:0 0 4px 0;
-        ">
-            <img
-                src="data:image/png;base64,{logo_b64}"
-                style="
-                    width:110px;
-                    height:auto;
-                    display:block;
-                "
-            />
-            <div style="
-                font-size:42px;
-                line-height:1;
-                font-weight:800;
-                letter-spacing:1.5px;
-                margin:0;
-            ">
-                DELTAX V2
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    logo_b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    logo_html = (
+        f'<img class="dx-logo" src="data:image/png;base64,{logo_b64}" />'
     )
 else:
-    st.markdown(
-        """
-        <div style="
-            font-size:42px;
-            line-height:1;
-            font-weight:800;
-            letter-spacing:1.5px;
-            margin:0 0 4px 0;
-        ">
-            DELTAX
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    logo_html = ""
 
-st.caption(
-    "Autonomous AI-assisted paper trading agent · "
-    "technical signals + news intelligence + deterministic risk/execution"
+st.markdown(
+    (
+        '<div class="dx-hero">'
+        + logo_html
+        + '<div>'
+        + '<div class="dx-brand">DELTAX V2</div>'
+        + '<div class="dx-tagline">Autonomous AI Trading · Code · Risk · Execute</div>'
+        + '</div></div>'
+    ),
+    unsafe_allow_html=True,
+)
+
+market_badge = "MARKET OPEN" if market["is_open"] else "MARKET CLOSED"
+agent_badge = (
+    "KILL SWITCH"
+    if control.get("kill_switch_active")
+    else ("AGENT ARMED · PAPER" if control.get("execution_enabled") else "AGENT DISARMED")
 )
 
 st.markdown(
+    (
+        '<div class="dx-badges">'
+        f'<div class="dx-badge primary">{agent_badge}</div>'
+        '<div class="dx-badge">ALPACA PAPER</div>'
+        f'<div class="dx-badge">{market_badge}</div>'
+        f'<div class="dx-badge">NYSE {market["now_et"].strftime("%H:%M:%S")}</div>'
+        f'<div class="dx-badge">{open_positions} OPEN POSITIONS</div>'
+        '<div class="dx-badge">AI + DETERMINISTIC RISK</div>'
+        '</div>'
+    ),
+    unsafe_allow_html=True,
+)
+
+k1, k2, k3, k4 = st.columns([1.15, 1, 1, 0.95])
+
+def _metric_html(label, value, sub, tone=""):
+    return (
+        '<div class="dx-panel">'
+        f'<div class="dx-kicker">{label}</div>'
+        f'<div class="dx-value {tone}">{value}</div>'
+        f'<div class="dx-sub">{sub}</div>'
+        '</div>'
+    )
+
+k1.markdown(
+    _metric_html(
+        "Account value",
+        money(current_equity),
+        "Live paper-account equity",
+        "cyan" if current_equity >= STARTING_EQUITY else "",
+    ),
+    unsafe_allow_html=True,
+)
+
+k2.markdown(
+    _metric_html(
+        "Today",
+        money(daily_pnl),
+        f"{daily_pnl_pct * 100:+.2f}% vs previous close",
+        "red" if daily_pnl < 0 else "cyan",
+    ),
+    unsafe_allow_html=True,
+)
+
+k3.markdown(
+    _metric_html(
+        "P&L since $100k start",
+        money(loss_since_start),
+        f"{loss_since_start_pct * 100:+.2f}% contest return",
+        "red" if loss_since_start < 0 else "cyan",
+    ),
+    unsafe_allow_html=True,
+)
+
+next_event_text = (
+    f'{market["next_event_label"]}: {countdown_text(market["countdown_seconds"])}'
+    if market.get("next_event") is not None
+    else "Next session: —"
+)
+k4.markdown(
+    _metric_html(
+        "Market session",
+        market_badge,
+        next_event_text,
+        "cyan" if market["is_open"] else "",
+    ),
+    unsafe_allow_html=True,
+)
+
+# Contest-week equity curve: Monday -> now
+st.markdown(
     """
     <div class="dx-section">
-        <div class="dx-section-title">1 · Agent & Portfolio Status</div>
+        <div class="dx-section-title">Portfolio · Contest Week</div>
         <div class="dx-section-subtitle">
-            Current operating state, capital and portfolio-level risk.
+            Equity path from Monday 00:00 ET to the latest Neon portfolio snapshot.
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-status_cols = st.columns([1.3, 1, 1, 1, 1, 1])
+if week_df.empty:
+    st.info("No portfolio snapshots are available for the current contest week yet.")
+else:
+    chart_df = week_df[["captured_at", "equity"]].copy()
+    chart_df["captured_at"] = chart_df["captured_at"].dt.tz_convert("America/New_York")
+    chart_df = chart_df.set_index("captured_at")
+    chart_df["$100k start"] = STARTING_EQUITY
 
-with status_cols[0]:
-    if control.get("kill_switch_active"):
-        st.error("KILL SWITCH ACTIVE")
-    elif control.get("execution_enabled"):
-        st.success("AGENT ARMED · PAPER")
-    else:
-        st.warning("AGENT DISARMED")
+    week_start_equity = float(chart_df["equity"].iloc[0])
+    week_last_equity = float(chart_df["equity"].iloc[-1])
+    week_change = week_last_equity - week_start_equity
+    week_change_pct = week_change / week_start_equity if week_start_equity else 0.0
 
-with status_cols[1]:
-    st.metric("Equity", money(portfolio.get("equity")))
-
-with status_cols[2]:
-    st.metric(
-        "Daily P&L",
-        money(portfolio.get("daily_pnl")),
-        pct(portfolio.get("daily_pnl_pct")),
+    c_week1, c_week2, c_week3, c_week4 = st.columns(4)
+    c_week1.metric("Monday / first snapshot", money(week_start_equity))
+    c_week2.metric(
+        "Latest equity",
+        money(week_last_equity),
+        f"{week_change_pct * 100:+.2f}% since first weekly snapshot",
+    )
+    c_week3.metric("Week P&L", money(week_change))
+    c_week4.metric(
+        "Snapshots",
+        f"{len(chart_df):,}",
+        as_nyse_time(week_df["captured_at"].iloc[-1]),
     )
 
-with status_cols[3]:
-    st.metric(
-        "Open positions",
-        int(portfolio.get("open_stock_positions") or 0)
-        + int(portfolio.get("open_options_positions") or 0),
-    )
-
-with status_cols[4]:
-    st.metric(
-        "Stock risk",
-        money(portfolio.get("stock_open_risk")),
-    )
-
-with status_cols[5]:
-    st.metric(
-        "Options risk",
-        money(portfolio.get("options_open_risk")),
+    st.line_chart(
+        chart_df[["equity", "$100k start"]],
+        height=330,
+        use_container_width=True,
     )
 
 st.markdown(
     """
     <div class="dx-section">
-        <div class="dx-section-title">2 · Market Session</div>
+        <div class="dx-section-title">Live Agent State</div>
         <div class="dx-section-subtitle">
-            NYSE session status and exchange-local timing used by the trading agent.
+            Current capital, risk and exchange-local session status.
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-market = nyse_market_state()
+s1, s2, s3, s4, s5 = st.columns(5)
+s1.metric(
+    "Execution",
+    "ON" if control.get("execution_enabled") else "OFF",
+)
+s2.metric(
+    "New entries",
+    "ON" if control.get("new_entries_enabled") else "OFF",
+)
+s3.metric(
+    "Stock risk",
+    money(portfolio.get("stock_open_risk")),
+)
+s4.metric(
+    "Options risk",
+    money(portfolio.get("options_open_risk")),
+)
+s5.metric(
+    "Last snapshot",
+    as_nyse_time(portfolio.get("captured_at")).split(" ")[1]
+    if portfolio.get("captured_at") else "—",
+)
 
-market_cols = st.columns([1.2, 1.2, 1.5, 1.5])
-
-with market_cols[0]:
-    if market["is_open"]:
-        st.success("NYSE OPEN")
-    else:
-        st.warning("NYSE CLOSED")
-
-with market_cols[1]:
-    st.metric(
-        "NYSE time",
-        market["now_et"].strftime("%H:%M:%S"),
-    )
-    st.caption(
-        market["now_et"].strftime("%Y-%m-%d %Z")
-    )
-
-with market_cols[2]:
-    if market["next_event"] is not None:
-        st.metric(
-            market["next_event_label"],
-            countdown_text(
-                market["countdown_seconds"]
-            ),
-        )
-        st.caption(
-            as_nyse_time(market["next_event"])
-        )
-    else:
-        st.metric("Next session", "—")
-
-with market_cols[3]:
-    st.metric(
-        "Last portfolio snapshot",
-        as_nyse_time(portfolio.get("captured_at")).split(" ")[1]
-        if portfolio.get("captured_at") else "—",
-    )
-    st.caption(
-        as_nyse_time(portfolio.get("captured_at"))
-        if portfolio.get("captured_at")
-        else "No snapshot yet"
-    )
 
 
 tabs = st.tabs(
@@ -1105,6 +1309,6 @@ with tabs[3]:
 
 st.divider()
 st.caption(
-    "DELTAX v2 · Alpaca PAPER trading · read-only jury dashboard · "
+    "DELTAX V2 · Alpaca PAPER trading · jury dashboard · "
     "technical signals + AI news reasoning + deterministic risk controls · all times NYSE/ET"
 )
