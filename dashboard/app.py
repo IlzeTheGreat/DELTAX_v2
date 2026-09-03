@@ -898,59 +898,178 @@ else:
     )
     y_max = max(101000.0, visible_max + 500.0)
 
-    # Force the visible Y-axis to start at $95,000.
-    # Passing the Vega-Lite spec as the first positional argument can cause
-    # Streamlit to rebuild the scale. Put the values into the spec itself.
+    # Force the visible Y-axis to start at $95,000 and show the week's
+    # high / low directly inside the chart.
     chart_values = chart_plot.to_dict(orient="records")
+
+    week_high = float(chart_df["equity"].max())
+    week_low = float(chart_df["equity"].min())
+
+    # Build one separator + label per trading day visible in the chart.
+    day_df = chart_df.reset_index()[["captured_at"]].copy()
+    day_df["day"] = day_df["captured_at"].dt.strftime("%Y-%m-%d")
+    day_df = day_df.groupby("day", as_index=False)["captured_at"].min()
+    day_df["label"] = pd.to_datetime(day_df["day"]).dt.strftime("%a %b %d").str.upper()
+    day_values = [
+        {
+            "captured_at": row["captured_at"].isoformat(),
+            "label": row["label"],
+        }
+        for _, row in day_df.iterrows()
+    ]
 
     st.vega_lite_chart(
         {
             "height": 330,
-            "data": {"values": chart_values},
-            "mark": {"type": "line", "strokeWidth": 2},
-            "encoding": {
-                "x": {
-                    "field": "captured_at",
-                    "type": "temporal",
-                    "title": "Contest week (NYSE / ET)",
+            "layer": [
+                {
+                    "data": {"values": chart_values},
+                    "mark": {"type": "line", "strokeWidth": 2},
+                    "encoding": {
+                        "x": {
+                            "field": "captured_at",
+                            "type": "temporal",
+                            "title": "Contest week (NYSE / ET)",
+                        },
+                        "y": {
+                            "field": "Equity",
+                            "type": "quantitative",
+                            "title": "Portfolio equity ($)",
+                            "scale": {
+                                "domain": [95000.0, float(y_max)],
+                                "zero": False,
+                                "nice": False,
+                            },
+                            "axis": {
+                                "format": "$,.0f",
+                                "values": [95000, 96000, 97000, 98000, 99000, 100000, 101000],
+                            },
+                        },
+                        "color": {
+                            "field": "Series",
+                            "type": "nominal",
+                            "title": None,
+                        },
+                        "tooltip": [
+                            {
+                                "field": "captured_at",
+                                "type": "temporal",
+                                "title": "Time",
+                            },
+                            {
+                                "field": "Series",
+                                "type": "nominal",
+                                "title": "Series",
+                            },
+                            {
+                                "field": "Equity",
+                                "type": "quantitative",
+                                "title": "Equity",
+                                "format": "$,.2f",
+                            },
+                        ],
+                    },
                 },
-                "y": {
-                    "field": "Equity",
-                    "type": "quantitative",
-                    "title": "Portfolio equity ($)",
-                    "scale": {
-                        "domain": [95000.0, float(y_max)],
-                        "zero": False,
-                        "nice": False,
+                {
+                    "data": {"values": day_values},
+                    "mark": {
+                        "type": "rule",
+                        "stroke": "#38e7e7",
+                        "strokeOpacity": 0.20,
+                        "strokeWidth": 1,
+                        "strokeDash": [4, 5],
                     },
-                    "axis": {
-                        "format": "$,.0f",
-                        "values": [95000, 96000, 97000, 98000, 99000, 100000, 101000],
+                    "encoding": {
+                        "x": {
+                            "field": "captured_at",
+                            "type": "temporal",
+                        }
                     },
                 },
-                "color": {
-                    "field": "Series",
-                    "type": "nominal",
-                    "title": None,
+                {
+                    "data": {"values": day_values},
+                    "mark": {
+                        "type": "text",
+                        "align": "left",
+                        "baseline": "top",
+                        "dx": 6,
+                        "dy": 4,
+                        "fontSize": 10,
+                        "fontWeight": "bold",
+                        "fill": "#7f9999",
+                    },
+                    "encoding": {
+                        "x": {
+                            "field": "captured_at",
+                            "type": "temporal",
+                        },
+                        "y": {"value": 4},
+                        "text": {"field": "label"},
+                    },
                 },
-                "tooltip": [
-                    {
-                        "field": "captured_at",
-                        "type": "temporal",
-                        "title": "Time",
+                {
+                    "mark": {
+                        "type": "rect",
+                        "fill": "#071010",
+                        "stroke": "#38e7e7",
+                        "strokeOpacity": 0.55,
+                        "cornerRadius": 3,
+                        "opacity": 0.94,
                     },
-                    {
-                        "field": "Series",
-                        "type": "nominal",
-                        "title": "Series",
+                    "encoding": {
+                        "x": {"value": 16},
+                        "x2": {"value": 176},
+                        "y": {"value": 16},
+                        "y2": {"value": 92},
                     },
-                    {
-                        "field": "Equity",
-                        "type": "quantitative",
-                        "title": "Equity",
-                        "format": "$,.2f",
+                },
+                {
+                    "data": {
+                        "values": [
+                            {"label": "WEEK HIGH", "value": f"${week_high:,.2f}", "y": 34},
+                            {"label": "WEEK LOW", "value": f"${week_low:,.2f}", "y": 67},
+                        ]
                     },
-                ],
+                    "mark": {
+                        "type": "text",
+                        "align": "left",
+                        "baseline": "middle",
+                        "fontSize": 11,
+                        "fontWeight": "bold",
+                        "fill": "#7f9999",
+                    },
+                    "encoding": {
+                        "x": {"value": 28},
+                        "y": {"field": "y", "type": "quantitative", "scale": None},
+                        "text": {"field": "label"},
+                    },
+                },
+                {
+                    "data": {
+                        "values": [
+                            {"value": f"${week_high:,.2f}", "y": 48},
+                            {"value": f"${week_low:,.2f}", "y": 81},
+                        ]
+                    },
+                    "mark": {
+                        "type": "text",
+                        "align": "left",
+                        "baseline": "middle",
+                        "fontSize": 15,
+                        "fontWeight": "bold",
+                        "fill": "#e8f4f4",
+                    },
+                    "encoding": {
+                        "x": {"value": 28},
+                        "y": {"field": "y", "type": "quantitative", "scale": None},
+                        "text": {"field": "value"},
+                    },
+                },
+            ],
+            "resolve": {
+                "scale": {
+                    "color": "independent"
+                }
             },
         },
         use_container_width=True,
