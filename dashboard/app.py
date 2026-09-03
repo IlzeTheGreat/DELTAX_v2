@@ -880,9 +880,79 @@ else:
         as_nyse_time(week_df["captured_at"].iloc[-1]),
     )
 
-    st.line_chart(
-        chart_df[["equity", "$100k start"]],
-        height=330,
+    # Fixed lower bound makes the contest P&L movement visually readable.
+    chart_plot = (
+        chart_df[["equity", "$100k start"]]
+        .reset_index()
+        .melt(
+            id_vars=["captured_at"],
+            var_name="Series",
+            value_name="Equity",
+        )
+    )
+    chart_plot["captured_at"] = chart_plot["captured_at"].astype(str)
+
+    visible_max = max(
+        100000.0,
+        float(chart_plot["Equity"].max()) if not chart_plot.empty else 100000.0,
+    )
+    y_max = max(101000.0, visible_max + 500.0)
+
+    # Force the visible Y-axis to start at $95,000.
+    # Passing the Vega-Lite spec as the first positional argument can cause
+    # Streamlit to rebuild the scale. Put the values into the spec itself.
+    chart_values = chart_plot.to_dict(orient="records")
+
+    st.vega_lite_chart(
+        {
+            "height": 330,
+            "data": {"values": chart_values},
+            "mark": {"type": "line", "strokeWidth": 2},
+            "encoding": {
+                "x": {
+                    "field": "captured_at",
+                    "type": "temporal",
+                    "title": "Contest week (NYSE / ET)",
+                },
+                "y": {
+                    "field": "Equity",
+                    "type": "quantitative",
+                    "title": "Portfolio equity ($)",
+                    "scale": {
+                        "domain": [95000.0, float(y_max)],
+                        "zero": False,
+                        "nice": False,
+                    },
+                    "axis": {
+                        "format": "$,.0f",
+                        "values": [95000, 96000, 97000, 98000, 99000, 100000, 101000],
+                    },
+                },
+                "color": {
+                    "field": "Series",
+                    "type": "nominal",
+                    "title": None,
+                },
+                "tooltip": [
+                    {
+                        "field": "captured_at",
+                        "type": "temporal",
+                        "title": "Time",
+                    },
+                    {
+                        "field": "Series",
+                        "type": "nominal",
+                        "title": "Series",
+                    },
+                    {
+                        "field": "Equity",
+                        "type": "quantitative",
+                        "title": "Equity",
+                        "format": "$,.2f",
+                    },
+                ],
+            },
+        },
         use_container_width=True,
     )
 
